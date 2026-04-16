@@ -1,6 +1,6 @@
 // ============================================================
-// BPSC TEACHER RECRUITMENT EXAM – PROGRESS TRACKER v3.1
-// script.js – Multi-Profile Logic + Premium UI Fixes
+// BPSC TEACHER RECRUITMENT EXAM – PROGRESS TRACKER v3.2
+// script.js – Multi-Profile Logic + Revision Tracking
 // ============================================================
 
 // ──────────────────────────────────────────────
@@ -164,7 +164,7 @@ const MASTER_DATA = [
 ];
 
 // ──────────────────────────────────────────────
-// STATE MANAGEMENT (v3.1)
+// STATE MANAGEMENT (v3.2)
 // ──────────────────────────────────────────────
 const STORAGE_KEY = "bpsc_tracker_v3";
 let appState = {
@@ -183,31 +183,27 @@ function loadState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      // Data Migration from old v2 or single-profile state
       if (parsed && !parsed.profiles) {
-         // This looks like old data, wrap it in a profile
+         // Legacy Migration
          const defaultId = "p_migrated";
-         appState = {
-           activeProfileId: null,
-           profiles: {
-             [defaultId]: {
-               id: defaultId,
-               name: "My Old Progress",
-               createdAt: new Date().toISOString(),
-               data: parsed
-             }
-           }
-         };
+         appState = { activeProfileId: null, profiles: { [defaultId]: { id: defaultId, name: "Legacy Data", createdAt: new Date().toISOString(), data: parsed } } };
          saveState();
       } else {
         appState = parsed;
       }
+      // Migration for 'revisions' field in topics
+      Object.keys(appState.profiles).forEach(pid => {
+        const profile = appState.profiles[pid];
+        Object.keys(profile.data).forEach(tid => {
+          if (!profile.data[tid].revisions) {
+            profile.data[tid].revisions = [];
+          }
+        });
+      });
     } else {
-      // New User
-      createNewProfile("Revision V1 (Fresh Start)");
+      createNewProfile("Revision V1 (Start)");
     }
   } catch (e) {
-    console.error("Load failed", e);
     appState = { activeProfileId: null, profiles: {} };
   }
 }
@@ -220,7 +216,7 @@ function createNewProfile(name) {
   const id = "p_" + Date.now();
   const profileData = {};
   MASTER_DATA.forEach(topic => {
-    profileData[topic.id] = { subtopics: {} };
+    profileData[topic.id] = { subtopics: {}, revisions: [] };
     topic.subtopics.forEach(sub => {
       profileData[topic.id].subtopics[sub.id] = {
         video: false, videoDate: null,
@@ -251,9 +247,7 @@ function duplicateProfile(id) {
   if (!original) return;
   const newId = "p_" + Date.now();
   const copy = JSON.parse(JSON.stringify(original));
-  copy.id = newId;
-  copy.name += " (Copy)";
-  copy.createdAt = new Date().toISOString();
+  copy.id = newId; copy.name += " (Copy)"; copy.createdAt = new Date().toISOString();
   appState.profiles[newId] = copy;
   saveState();
 }
@@ -270,7 +264,6 @@ function getSubtopicProgress(topicId, profileId) {
   const pid = profileId || appState.activeProfileId;
   const profile = appState.profiles[pid];
   if (!profile) return { done: 0, total: 0, pct: 0 };
-
   const topic = MASTER_DATA.find(t => t.id === topicId);
   const total = topic.subtopics.length;
   let done = 0;
@@ -281,23 +274,10 @@ function getSubtopicProgress(topicId, profileId) {
   return { done, total, pct: total ? Math.round((done / total) * 100) : 0 };
 }
 
-function getTopicSectionProgress(topicId, section) {
-  const profile = appState.profiles[appState.activeProfileId];
-  if (!profile) return 0;
-  const topic = MASTER_DATA.find(t => t.id === topicId);
-  const total = topic.subtopics.length;
-  let done = 0;
-  topic.subtopics.forEach(sub => {
-    if (profile.data[topicId]?.subtopics?.[sub.id]?.[section]) done++;
-  });
-  return total ? Math.round((done / total) * 100) : 0;
-}
-
 function getOverallProgress(profileId) {
   const targetId = profileId || appState.activeProfileId;
   const profile = appState.profiles[targetId];
   if (!profile) return 0;
-
   const totalWeight = MASTER_DATA.reduce((a, t) => a + t.weight, 0);
   let weightedProgress = 0;
   MASTER_DATA.forEach(topic => {
@@ -311,8 +291,7 @@ function getTotalCounts() {
   let doneSubs = 0, totalSubs = 0;
   MASTER_DATA.forEach(topic => {
     const p = getSubtopicProgress(topic.id);
-    doneSubs += p.done;
-    totalSubs += p.total;
+    doneSubs += p.done; totalSubs += p.total;
   });
   return { doneSubs, totalSubs, pendingSubs: totalSubs - doneSubs };
 }
@@ -320,35 +299,26 @@ function getTotalCounts() {
 // ──────────────────────────────────────────────
 // UI RENDERING
 // ──────────────────────────────────────────────
-let activeTab = "topics";
-let activeFilter = "all";
-let expandedTopics = new Set();
+let activeTab = "topics", activeFilter = "all", expandedTopics = new Set();
 
 function renderApp() {
-  if (appState.activeProfileId === null) {
-    renderHome();
-  } else {
-    renderTracker();
-  }
+  if (appState.activeProfileId === null) renderHome();
+  else renderTracker();
 }
 
 function renderHome() {
   const container = document.getElementById("topics-container");
   const header    = document.getElementById("app-header");
-  
-  // Elements that might be hidden
-  const controls = document.getElementById("controls-bar");
-  const tabs     = document.querySelector(".tabs-bar");
-  const bnav     = document.querySelector(".bottom-nav");
+  const controls = document.getElementById("controls-bar"), tabs = document.querySelector(".tabs-bar"), bnav = document.querySelector(".bottom-nav");
   if (controls) controls.style.display = "none";
-  if (tabs)     tabs.style.display = "none";
-  if (bnav)     bnav.style.display = "none";
+  if (tabs) tabs.style.display = "none";
+  if (bnav) bnav.style.display = "none";
 
   header.innerHTML = `
     <div class="header-top">
       <div>
-        <div class="app-title">🏠 Version Hub</div>
-        <div class="app-subtitle">Select a preparation version to continue</div>
+        <div class="app-title">🏠 Preparation Hub</div>
+        <div class="app-subtitle">Multi-Version Tracking Engine</div>
       </div>
       <button class="icon-btn" id="add-profile-btn" style="color:var(--accent3)">+ New Version</button>
     </div>
@@ -362,7 +332,7 @@ function renderHome() {
         <div class="profile-card">
           <div class="p-card-header">
             <div class="p-name">${p.name}</div>
-            <div class="p-date">Created: ${formatDate(p.createdAt)}</div>
+            <div class="p-date">Created: ${formatDateSimple(p.createdAt)}</div>
           </div>
           <div class="p-card-body">
             <div class="p-pct-large">${pct}%</div>
@@ -376,49 +346,30 @@ function renderHome() {
       `;
     }).join("");
 
-  container.innerHTML = `
-    <div class="profile-hub">
-      <div class="hub-grid">${profilesHtml || "<p style='color:var(--text3)'>No versions found. Create one above!</p>"}</div>
-    </div>
-  `;
+  container.innerHTML = `<div class="profile-hub"><div class="hub-grid">${profilesHtml || "<p>Create a version to start tracking!</p>"}</div></div>`;
 }
 
 function renderTracker() {
   const profile = appState.profiles[appState.activeProfileId];
   if (!profile) { appState.activeProfileId = null; renderHome(); return; }
-
-  const controls = document.getElementById("controls-bar");
-  const tabs     = document.querySelector(".tabs-bar");
-  const bnav     = document.querySelector(".bottom-nav");
+  const controls = document.getElementById("controls-bar"), tabs = document.querySelector(".tabs-bar"), bnav = document.querySelector(".bottom-nav");
   if (controls && activeTab === "topics") controls.style.display = "flex";
   if (tabs && window.innerWidth >= 700) tabs.style.display = "flex";
   if (bnav) bnav.style.display = "flex";
-
   renderHeader();
-  if (activeTab === "topics") renderTopicsView();
-  else renderDashboard();
+  if (activeTab === "topics") renderTopicsView(); else renderDashboard();
 }
 
 function renderHeader() {
-  const profile = appState.profiles[appState.activeProfileId];
-  const overall = getOverallProgress();
-  const counts  = getTotalCounts();
-  const header  = document.getElementById("app-header");
-
+  const profile = appState.profiles[appState.activeProfileId], overall = getOverallProgress(), counts = getTotalCounts(), header = document.getElementById("app-header");
   header.innerHTML = `
     <div class="header-top">
-      <div class="back-home-wrap">
-        <button id="go-home-btn" class="back-btn">←</button>
-        <div>
-          <div class="app-title">${profile.name}</div>
-          <div class="app-subtitle">${overall}% Exam Ready</div>
-        </div>
+      <div class="back-home-wrap"><button id="go-home-btn" class="back-btn">←</button>
+        <div><div class="app-title">${profile.name}</div><div class="app-subtitle">${overall}% Readiness</div></div>
       </div>
       <button class="icon-btn" id="reset-btn" style="color:var(--accent2)">↺ Reset</button>
     </div>
-    <div class="overall-progress-wrap">
-      <div id="top-progress-bar" style="width:${overall}%"></div>
-    </div>
+    <div class="overall-progress-wrap"><div id="top-progress-bar" style="width:${overall}%"></div></div>
     <div class="stats-strip">
       <div class="stat-item"><span class="stat-num overall">${overall}%</span><span class="stat-lbl">Done</span></div>
       <span class="stat-sep">|</span>
@@ -432,18 +383,16 @@ function renderHeader() {
 function renderTopicsView() {
   const container = document.getElementById("topics-container");
   container.innerHTML = "";
+  const data = getActiveData();
 
   MASTER_DATA.forEach(topic => {
     const { done, total, pct } = getSubtopicProgress(topic.id);
     const isExpanded = expandedTopics.has(topic.id);
     const isComplete = pct === 100;
+    const revs = data[topic.id]?.revisions || [];
 
     if (activeFilter === "done" && !isComplete) return;
     if (activeFilter === "pending" && isComplete) return;
-
-    const vPct = getTopicSectionProgress(topic.id, "video");
-    const nPct = getTopicSectionProgress(topic.id, "ncert");
-    const pPct = getTopicSectionProgress(topic.id, "pyq");
 
     const card = document.createElement("div");
     card.className = `topic-card ${isExpanded ? "expanded" : ""} ${isComplete ? "complete" : ""}`;
@@ -452,21 +401,16 @@ function renderTopicsView() {
         <div class="topic-header-left">
           <div class="topic-icon">${isComplete ? "✓" : getTopicEmoji(topic.id)}</div>
           <div>
-            <div class="topic-name">${topic.name}</div>
+            <div class="topic-name">${topic.name} ${revs.length ? `<span class="rev-count">Rev: ${revs.length}</span>` : ""}</div>
             <div class="topic-lbl" style="font-size:10px;color:var(--text3)">${done}/${total} subtopics • Wt: ${topic.weight}</div>
           </div>
         </div>
         <div class="topic-header-right">
-          <button class="quick-done-btn ${isComplete ? 'hidden' : ''}" data-tid="${topic.id}">Finish</button>
+          <button class="rev-btn" data-tid="${topic.id}" title="Add Revision">Rev +</button>
           <div class="topic-pct">${pct}%</div>
         </div>
       </div>
       <div class="topic-progress-bar-wrap"><div class="p-bar-fill" style="width:${pct}%;height:100%;background:var(--accent)"></div></div>
-      <div class="section-mini-bars" style="padding:10px 16px; font-size:10px; display:flex; gap:10px;">
-         <span style="color:var(--accent2)">🎬 ${vPct}%</span>
-         <span style="color:var(--accent3)">📚 ${nPct}%</span>
-         <span style="color:var(--accent4)">📝 ${pPct}%</span>
-      </div>
       ${isExpanded ? renderTopicExpanded(topic) : ""}
     `;
     container.appendChild(card);
@@ -475,68 +419,61 @@ function renderTopicsView() {
 
 function renderTopicExpanded(topic) {
   const data = getActiveData()[topic.id]?.subtopics || {};
+  const revs = getActiveData()[topic.id]?.revisions || [];
+  
+  const revHistory = revs.length ? `<div class="rev-history">Recent Revision: ${formatDateSimple(revs[revs.length-1])}</div>` : "";
+
   const rows = topic.subtopics.map(sub => {
     const s = data[sub.id] || {};
     const complete = s.video && s.ncert && s.pyq;
     return `
       <div class="subtopic-row ${complete ? "sub-complete" : ""}">
         <div class="sub-name">${sub.name}</div>
-        <div class="sub-checks" style="display:flex; gap:8px; margin-top:8px;">
+        <div class="sub-checks">
           <label class="check-pill ${s.video ? "checked" : ""}">
-            <input type="checkbox" data-tid="${topic.id}" data-sid="${sub.id}" data-section="video" ${s.video ? "checked" : ""}> 🎬 Vid
+            <input type="checkbox" data-tid="${topic.id}" data-sid="${sub.id}" data-section="video" ${s.video ? "checked" : ""}> 
+            🎬 Vid ${s.videoDate ? `<span class="chk-date">${formatDateSimple(s.videoDate)}</span>` : ""}
           </label>
           <label class="check-pill ${s.ncert ? "checked" : ""}">
-            <input type="checkbox" data-tid="${topic.id}" data-sid="${sub.id}" data-section="ncert" ${s.ncert ? "checked" : ""}> 📚 Book
+            <input type="checkbox" data-tid="${topic.id}" data-sid="${sub.id}" data-section="ncert" ${s.ncert ? "checked" : ""}> 
+            📚 Book ${s.ncertDate ? `<span class="chk-date">${formatDateSimple(s.ncertDate)}</span>` : ""}
           </label>
           <label class="check-pill ${s.pyq ? "checked" : ""}">
-            <input type="checkbox" data-tid="${topic.id}" data-sid="${sub.id}" data-section="pyq" ${s.pyq ? "checked" : ""}> 📝 PYQ
+            <input type="checkbox" data-tid="${topic.id}" data-sid="${sub.id}" data-section="pyq" ${s.pyq ? "checked" : ""}> 
+            📝 PYQ ${s.pyqDate ? `<span class="chk-date">${formatDateSimple(s.pyqDate)}</span>` : ""}
           </label>
         </div>
       </div>
     `;
   }).join("");
-  return `<div class="topic-expanded">${rows}</div>`;
+  return `<div class="topic-expanded">${revHistory}${rows}</div>`;
 }
 
 function renderDashboard() {
   const container = document.getElementById("topics-container");
-  const rows = MASTER_DATA.map(t => {
-    const { pct } = getSubtopicProgress(t.id);
-    return `
-      <div class="dash-topic-row">
-        <div class="dash-topic-name">${t.name}</div>
-        <div class="dash-track"><div class="dash-fill" style="width:${pct}%"></div></div>
-        <div class="dash-stat">${pct}%</div>
-      </div>
-    `;
-  }).join("");
-  container.innerHTML = `<div class="dashboard"><div class="dash-card"><div class="dash-card-title">Syllabus Progress</div>${rows}</div></div>`;
+  const rows = MASTER_DATA.map(t => { const { pct } = getSubtopicProgress(t.id); return `<div class="dash-topic-row"><div class="dash-topic-name">${t.name}</div><div class="dash-track"><div class="dash-fill" style="width:${pct}%"></div></div><div class="dash-stat">${pct}%</div></div>`; }).join("");
+  container.innerHTML = `<div class="dashboard"><div class="dash-card"><div class="dash-card-title">Syllabus Readiness</div>${rows}</div></div>`;
 }
 
 // ──────────────────────────────────────────────
 // UTILS & HELPERS
 // ──────────────────────────────────────────────
-function formatDate(iso) {
+function formatDateSimple(iso) {
+  if (!iso) return "";
   const d = new Date(iso);
   return d.toLocaleDateString("en-IN", { day:"numeric", month:"short" });
 }
-
-function getTopicEmoji(id) {
-  const map = { number_system: "🔢", percentage: "💯", ratio_proportion: "⚖️", arithmetic: "🧮", algebra: "🔣", geometry: "📐", mensuration: "📏", trigonometry: "📡", statistics: "📊", probability: "🎲" };
-  return map[id] || "📘";
-}
+function getTopicEmoji(id) { const map = { number_system:"🔢", percentage:"💯", ratio_proportion:"⚖️", arithmetic:"🧮", algebra:"🔣", geometry:"📐", mensuration:"📏", trigonometry:"📡", statistics:"📊", probability:"🎲" }; return map[id] || "📘"; }
 
 // ──────────────────────────────────────────────
 // EVENTS
 // ──────────────────────────────────────────────
 document.addEventListener("click", (e) => {
   const btn = e.target;
-  
   if (btn.id === "add-profile-btn") {
-    const name = prompt("Version Name:", `Revision ${Object.keys(appState.profiles).length + 1}`);
+    const name = prompt("Name this Version:", `Revision ${Object.keys(appState.profiles).length + 1}`);
     if (name) { createNewProfile(name); renderApp(); }
   }
-
   const pBtn = btn.closest(".p-btn");
   if (pBtn) {
     const id = pBtn.dataset.id;
@@ -544,48 +481,26 @@ document.addEventListener("click", (e) => {
     if (pBtn.classList.contains("delete")) if (confirm("Delete this version?")) deleteProfile(id);
     renderApp();
   }
-
   if (btn.id === "go-home-btn") { appState.activeProfileId = null; renderApp(); }
-
   const header = btn.closest(".topic-header");
-  if (header && !btn.classList.contains("quick-done-btn")) {
+  if (header && !btn.classList.contains("rev-btn")) {
     const id = header.dataset.id;
-    if (expandedTopics.has(id)) expandedTopics.delete(id);
-    else expandedTopics.add(id);
+    if (expandedTopics.has(id)) expandedTopics.delete(id); else expandedTopics.add(id);
     renderApp();
   }
-
-  if (btn.classList.contains("quick-done-btn")) {
+  if (btn.classList.contains("rev-btn")) {
     const tid = btn.dataset.tid;
-    const data = getActiveData()[tid].subtopics;
-    MASTER_DATA.find(t => t.id === tid).subtopics.forEach(s => {
-      data[s.id].video = data[s.id].ncert = data[s.id].pyq = true;
-    });
-    saveState();
-    renderApp();
+    getActiveData()[tid].revisions.push(new Date().toISOString());
+    saveState(); renderApp();
   }
-
   const tabBtn = btn.closest(".tab-btn");
-  if (tabBtn) {
-    activeTab = tabBtn.dataset.tab;
-    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b === tabBtn));
-    renderApp();
-  }
-  
+  if (tabBtn) { activeTab = tabBtn.dataset.tab; document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b === tabBtn)); renderApp(); }
   const filBtn = btn.closest(".filter-btn");
-  if (filBtn) {
-    activeFilter = filBtn.dataset.filter;
-    document.querySelectorAll(".filter-btn").forEach(b => b.classList.toggle("active", b === filBtn));
-    renderTopicsView();
-  }
-
+  if (filBtn) { activeFilter = filBtn.dataset.filter; document.querySelectorAll(".filter-btn").forEach(b => b.classList.toggle("active", b === filBtn)); renderTopicsView(); }
   if (btn.id === "reset-btn") {
-     if (confirm("Reset current version?")) {
-        const id = appState.activeProfileId;
-        const name = appState.profiles[id].name;
-        deleteProfile(id);
-        const newId = createNewProfile(name);
-        appState.activeProfileId = newId;
+     if (confirm("Reset THIS version?")) {
+        const id = appState.activeProfileId, name = appState.profiles[id].name;
+        deleteProfile(id); appState.activeProfileId = createNewProfile(name);
         renderApp();
      }
   }
@@ -596,30 +511,18 @@ document.addEventListener("change", (e) => {
     const { tid, sid, section } = e.target.dataset;
     const s = getActiveData()[tid].subtopics[sid];
     s[section] = e.target.checked;
-    saveState();
-    renderApp();
+    s[section + "Date"] = e.target.checked ? new Date().toISOString() : null;
+    saveState(); renderApp();
   }
 });
 
-// PWA Install
 let deferredPrompt;
 function setupInstallPrompt() {
-  window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    deferredPrompt = e;
-    const banner = document.getElementById('install-banner');
-    if (banner) banner.classList.remove('hidden');
-  });
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; const banner = document.getElementById('install-banner'); if (banner) banner.classList.remove('hidden'); });
 }
-
 function installApp() {
-  if (!deferredPrompt) return;
-  deferredPrompt.prompt();
-  deferredPrompt.userChoice.then(() => {
-    deferredPrompt = null;
-    document.getElementById('install-banner').classList.add('hidden');
-  });
+  if (!deferredPrompt) return; deferredPrompt.prompt();
+  deferredPrompt.userChoice.then(() => { deferredPrompt = null; document.getElementById('install-banner').classList.add('hidden'); });
 }
 
-// Start
 init();

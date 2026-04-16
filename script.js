@@ -207,69 +207,97 @@ const MASTER_DATA = [
 // ──────────────────────────────────────────────
 // STATE MANAGEMENT
 // ──────────────────────────────────────────────
-const STORAGE_KEY = "bpsc_tracker_v2";
+// ──────────────────────────────────────────────
+// STATE MANAGEMENT (MULTI-PROFILE)
+// ──────────────────────────────────────────────
+const STORAGE_KEY = "bpsc_tracker_v3"; // Upgraded key for new schema
 
-let state = {};
+let appState = {
+  activeProfileId: null, // null means we are at the Home/Hub
+  profiles: {}
+};
 
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      state = JSON.parse(raw);
+      appState = JSON.parse(raw);
+      // Migrate from v2 if needed (minimal logic)
+      if (!appState.profiles) {
+        const oldData = appState;
+        appState = { activeProfileId: null, profiles: { "V1": oldData } };
+      }
     } else {
-      initState();
+      initDefaultProfile();
     }
   } catch (e) {
-    initState();
+    initDefaultProfile();
   }
 }
 
-function initState() {
-  state = {};
+function initDefaultProfile() {
+  appState = { activeProfileId: null, profiles: {} };
+  createNewProfile("My First Attempt (V1)");
+}
+
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+}
+
+function createNewProfile(name) {
+  const id = "p_" + Date.now();
+  const profileData = {};
   MASTER_DATA.forEach(topic => {
-    state[topic.id] = {
-      video: { done: false, date: null },
-      ncert: { done: false, date: null },
-      pyq:   { done: false, date: null },
+    profileData[topic.id] = {
       subtopics: {}
     };
     topic.subtopics.forEach(sub => {
-      state[topic.id].subtopics[sub.id] = {
+      profileData[topic.id].subtopics[sub.id] = {
         video: false, videoDate: null,
         ncert: false, ncertDate: null,
         pyq:   false, pyqDate:   null
       };
     });
   });
+
+  appState.profiles[id] = {
+    id,
+    name: name || `Version ${Object.keys(appState.profiles).length + 1}`,
+    createdAt: new Date().toISOString(),
+    data: profileData
+  };
+  saveState();
+  return id;
+}
+
+function deleteProfile(id) {
+  delete appState.profiles[id];
+  if (appState.activeProfileId === id) appState.activeProfileId = null;
   saveState();
 }
 
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-// Ensure any missing keys (new subtopics added to master) exist in state
-function reconcileState() {
-  MASTER_DATA.forEach(topic => {
-    if (!state[topic.id]) {
-      state[topic.id] = { video: { done:false,date:null }, ncert:{done:false,date:null}, pyq:{done:false,date:null}, subtopics:{} };
-    }
-    if (!state[topic.id].subtopics) state[topic.id].subtopics = {};
-    topic.subtopics.forEach(sub => {
-      if (!state[topic.id].subtopics[sub.id]) {
-        state[topic.id].subtopics[sub.id] = { video:false,videoDate:null,ncert:false,ncertDate:null,pyq:false,pyqDate:null };
-      }
-    });
-  });
+function duplicateProfile(id) {
+  const original = appState.profiles[id];
+  if (!original) return;
+  const newId = "p_" + Date.now();
+  appState.profiles[newId] = JSON.parse(JSON.stringify(original));
+  appState.profiles[newId].id = newId;
+  appState.profiles[newId].name += " (Copy)";
+  appState.profiles[newId].createdAt = new Date().toISOString();
+  saveState();
 }
 
 // ──────────────────────────────────────────────
-// PROGRESS CALCULATION
+// PROGRESS CALCULATION (PROFILE-AWARE)
 // ──────────────────────────────────────────────
+function getActiveData() {
+  return appState.profiles[appState.activeProfileId]?.data || {};
+}
+
 function isSubtopicComplete(topicId, subId) {
-  const s = state[topicId]?.subtopics?.[subId];
-  if (!s) return false;
-  return s.video && s.ncert && s.pyq;
+  const data = getActiveData();
+  const s = data[topicId]?.subtopics?.[subId];
+  return s ? (s.video && s.ncert && s.pyq) : false;
 }
 
 function getSubtopicProgress(topicId) {
@@ -283,15 +311,27 @@ function getSubtopicProgress(topicId) {
 function getTopicSectionProgress(topicId, section) {
   const topic = MASTER_DATA.find(t => t.id === topicId);
   if (!topic) return 0;
-  const done = topic.subtopics.filter(s => state[topicId]?.subtopics?.[s.id]?.[section]).length;
+  const data = getActiveData();
+  const done = topic.subtopics.filter(s => data[topicId]?.subtopics?.[s.id]?.[section]).length;
   return topic.subtopics.length ? Math.round((done / topic.subtopics.length) * 100) : 0;
 }
 
-function getOverallProgress() {
+function getOverallProgress(profileId) {
+  const targetId = profileId || appState.activeProfileId;
+  const profile = appState.profiles[targetId];
+  if (!profile) return 0;
+
   const totalWeight = MASTER_DATA.reduce((a, t) => a + t.weight, 0);
   let weightedSum = 0;
   MASTER_DATA.forEach(topic => {
-    const { pct } = getSubtopicProgress(topic.id);
+    // Local calculation for specific profile if needed, or active one
+    const subtopics = topic.subtopics;
+    const total = subtopics.length;
+    const done = subtopics.filter(s => {
+      const st = profile.data[topic.id]?.subtopics?.[s.id];
+      return st && st.video && st.ncert && st.pyq;
+    }).length;
+    const pct = total ? Math.round((done / total) * 100) : 0;
     weightedSum += (pct * topic.weight);
   });
   return Math.round(weightedSum / totalWeight);
@@ -344,7 +384,83 @@ function today() {
   return new Date().toISOString();
 }
 
+// ──────────────────────────────────────────────
+// RENDER ENGINE
+// ──────────────────────────────────────────────
 function renderApp() {
+  if (appState.activeProfileId === null) {
+    renderHome();
+  } else {
+    renderTracker();
+  }
+}
+
+function renderHome() {
+  const container = document.getElementById("topics-container");
+  const header    = document.getElementById("app-header");
+  const controls  = document.getElementById("controls-bar");
+  const bnav      = document.querySelector(".bottom-nav");
+  const tabs      = document.querySelector(".tabs-bar");
+
+  // Hide tracker-only elements
+  if (controls) controls.style.display = "none";
+  if (bnav)     bnav.style.display     = "none";
+  if (tabs)     tabs.style.display     = "none";
+
+  // Update Header for Home
+  header.innerHTML = `
+    <div class="header-top">
+      <div>
+        <div class="app-title">🏠 Version Hub</div>
+        <div class="app-subtitle">Select a study profile to continue</div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="add-profile-btn" style="color:var(--accent3)">+ New Version</button>
+      </div>
+    </div>
+  `;
+
+  container.innerHTML = `
+    <div class="profile-hub">
+      <div class="hub-grid" id="profile-list"></div>
+    </div>
+  `;
+
+  const list = document.getElementById("profile-list");
+  Object.values(appState.profiles).sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)).forEach(p => {
+    const pct = getOverallProgress(p.id);
+    const card = document.createElement("div");
+    card.className = "profile-card";
+    card.innerHTML = `
+      <div class="p-card-header">
+        <div class="p-name">${p.name}</div>
+        <div class="p-date">Created: ${formatDate(p.createdAt)}</div>
+      </div>
+      <div class="p-card-body">
+        <div class="p-pct-large">${pct}%</div>
+        <div class="p-bar"><div class="p-bar-fill" style="width:${pct}%"></div></div>
+      </div>
+      <div class="p-card-footer">
+        <button class="p-btn open" data-id="${p.id}">Open</button>
+        <button class="p-btn copy" data-id="${p.id}" title="Duplicate">📋</button>
+        <button class="p-btn delete" data-id="${p.id}" title="Delete">🗑️</button>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+function renderTracker() {
+  const profile = appState.profiles[appState.activeProfileId];
+  if (!profile) { appState.activeProfileId = null; renderHome(); return; }
+
+  const controls  = document.getElementById("controls-bar");
+  const bnav      = document.querySelector(".bottom-nav");
+  const tabs      = document.querySelector(".tabs-bar");
+  if (controls && activeTab === 'topics') controls.style.display = "";
+  if (bnav)     bnav.style.display     = "";
+  if (tabs && window.innerWidth >= 700) tabs.style.display = "";
+
   renderHeader();
   if (activeTab === "topics") {
     renderTopicsView();
@@ -354,14 +470,45 @@ function renderApp() {
 }
 
 function renderHeader() {
+  const profile = appState.profiles[appState.activeProfileId];
   const overall = getOverallProgress();
   const counts  = getTotalCounts();
-  document.getElementById("overall-pct").textContent  = overall + "%";
-  document.getElementById("total-done").textContent   = counts.doneSubs;
-  document.getElementById("total-pending").textContent = counts.pendingSubs;
-  document.getElementById("total-subs").textContent   = counts.totalSubs;
-  document.getElementById("top-progress-bar").style.width = overall + "%";
-  document.getElementById("top-progress-bar").dataset.pct = overall;
+  
+  const header = document.getElementById("app-header");
+  header.innerHTML = `
+    <div class="header-top">
+      <div class="back-home-wrap">
+        <button id="go-home-btn" class="back-btn">←</button>
+        <div>
+          <div class="app-title">${profile.name}</div>
+          <div class="app-subtitle">${overall}% Overall Readiness</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="reset-btn" title="Reset all progress">↺ Reset</button>
+      </div>
+    </div>
+    <div class="overall-progress-wrap">
+      <div id="top-progress-bar" style="width:${overall}%"></div>
+    </div>
+    <div class="stats-strip">
+      <div class="stat-item"><span class="stat-num overall">${overall}%</span><span class="stat-lbl">Readiness</span></div>
+      <span class="stat-sep">|</span>
+      <div class="stat-item"><span class="stat-num done">${counts.doneSubs}</span><span class="stat-lbl">Done</span></div>
+      <span class="stat-sep">|</span>
+      <div class="stat-item"><span class="stat-num pending">${counts.pendingSubs}</span><span class="stat-lbl">Left</span></div>
+    </div>
+  `;
+}
+
+function formatDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-IN", { day:"2-digit", month:"short", year:"2-digit" });
+}
+
+function today() {
+  return new Date().toISOString();
 }
 
 function renderTopicsView() {
@@ -373,7 +520,6 @@ function renderTopicsView() {
     const isExpanded = expandedTopics.has(topic.id);
     const isComplete = pct === 100;
 
-    // filter
     if (activeFilter === "done"    && !isComplete) return;
     if (activeFilter === "pending" &&  isComplete) return;
 
@@ -381,7 +527,6 @@ function renderTopicsView() {
     card.className = "topic-card" + (isExpanded ? " expanded" : "") + (isComplete ? " complete" : "");
     card.dataset.id = topic.id;
 
-    // Section progress for mini bars
     const vidPct  = getTopicSectionProgress(topic.id, "video");
     const ncertPct = getTopicSectionProgress(topic.id, "ncert");
     const pyqPct  = getTopicSectionProgress(topic.id, "pyq");
@@ -399,13 +544,14 @@ function renderTopicsView() {
           </div>
         </div>
         <div class="topic-header-right">
+          <button class="quick-done-btn ${isComplete ? 'hidden' : ''}" data-tid="${topic.id}" title="Mark Topic Finished">Finish</button>
           <div class="topic-pct">${pct}%</div>
           <div class="chevron">${isExpanded ? "▲" : "▼"}</div>
         </div>
       </div>
 
       <div class="topic-progress-bar-wrap">
-        <div class="topic-progress-bar" style="width:${pct}%" data-pct="${pct}"></div>
+        <div class="topic-progress-bar" style="width:${pct}%"></div>
       </div>
 
       <div class="section-mini-bars">
@@ -434,7 +580,8 @@ function renderTopicsView() {
 }
 
 function renderTopicExpanded(topic) {
-  const ts = state[topic.id];
+  const data = getActiveData();
+  const ts = data[topic.id];
 
   const videoTags = topic.videoLectures.map(v => `<span class="tag video-tag">🎬 ${v}</span>`).join("");
   const pyqTags   = topic.pyqChapters.map(p => `<span class="tag pyq-tag">📝 ${p}</span>`).join("");
@@ -448,17 +595,17 @@ function renderTopicExpanded(topic) {
         <div class="sub-name">${complete ? "✓ " : ""}${sub.name}</div>
         <div class="sub-ncert">📘 ${ncertText}</div>
         <div class="sub-checks">
-          <label class="check-pill ${ss.video ? "checked" : ""}" title="${ss.videoDate ? "Done: "+formatDate(ss.videoDate) : "Mark video done"}">
+          <label class="check-pill ${ss.video ? "checked" : ""}">
             <input type="checkbox" data-tid="${topic.id}" data-sid="${sub.id}" data-section="video" ${ss.video ? "checked" : ""}>
-            🎬 Video${ss.video && ss.videoDate ? '<span class="chk-date">'+formatDate(ss.videoDate)+"</span>" : ""}
+            🎬 Video
           </label>
-          <label class="check-pill ${ss.ncert ? "checked" : ""}" title="${ss.ncertDate ? "Done: "+formatDate(ss.ncertDate) : "Mark NCERT done"}">
+          <label class="check-pill ${ss.ncert ? "checked" : ""}">
             <input type="checkbox" data-tid="${topic.id}" data-sid="${sub.id}" data-section="ncert" ${ss.ncert ? "checked" : ""}>
-            📚 NCERT${ss.ncert && ss.ncertDate ? '<span class="chk-date">'+formatDate(ss.ncertDate)+"</span>" : ""}
+            📚 NCERT
           </label>
-          <label class="check-pill ${ss.pyq ? "checked" : ""}" title="${ss.pyqDate ? "Done: "+formatDate(ss.pyqDate) : "Mark PYQ done"}">
+          <label class="check-pill ${ss.pyq ? "checked" : ""}">
             <input type="checkbox" data-tid="${topic.id}" data-sid="${sub.id}" data-section="pyq" ${ss.pyq ? "checked" : ""}>
-            📝 PYQ${ss.pyq && ss.pyqDate ? '<span class="chk-date">'+formatDate(ss.pyqDate)+"</span>" : ""}
+            📝 PYQ
           </label>
         </div>
       </div>`;
@@ -473,7 +620,7 @@ function renderTopicExpanded(topic) {
       <div class="subtopics-list">
         <div class="sub-header-row">
           <span>Subtopic</span>
-          <span>Video · NCERT · PYQ</span>
+          <span>Actions</span>
         </div>
         ${subtopicRows}
       </div>
@@ -484,65 +631,25 @@ function renderDashboard() {
   const container = document.getElementById("topics-container");
   const overall   = getOverallProgress();
   const counts    = getTotalCounts();
-  const activity  = getDailyActivity();
-
-  // Build topic rows for dashboard
+  // Simplified for performance in v3
+  
   const topicRows = MASTER_DATA.map(topic => {
-    const { done, total, pct } = getSubtopicProgress(topic.id);
-    const colorClass = pct === 100 ? "bar-done" : pct >= 60 ? "bar-good" : pct >= 30 ? "bar-mid" : "bar-low";
+    const { pct } = getSubtopicProgress(topic.id);
     return `
       <div class="dash-topic-row">
         <div class="dash-topic-name">${getTopicEmoji(topic.id)} ${topic.name}</div>
         <div class="dash-track-wrap">
-          <div class="dash-track"><div class="dash-fill ${colorClass}" style="width:${pct}%"></div></div>
+          <div class="dash-track"><div class="dash-fill" style="width:${pct}%"></div></div>
         </div>
-        <div class="dash-topic-stat">${done}/${total} <span class="dash-pct">${pct}%</span></div>
+        <div class="dash-topic-stat">${pct}%</div>
       </div>`;
   }).join("");
 
-  // Activity chart data
-  const actDates = Object.keys(activity).sort();
-  const chartHTML = buildActivityChart(actDates, activity);
-
-  // Readiness breakdown
-  const readinessHTML = buildReadiness();
-
   container.innerHTML = `
     <div class="dashboard">
-      <div class="dash-grid-top">
-        <div class="dash-card big-progress-card">
-          <div class="dash-card-title">📊 Overall Exam Readiness</div>
-          <div class="big-progress-ring">
-            <svg viewBox="0 0 120 120" class="ring-svg">
-              <circle cx="60" cy="60" r="52" class="ring-bg"/>
-              <circle cx="60" cy="60" r="52" class="ring-fill" style="stroke-dasharray:${Math.round(overall*3.267)} 327;"/>
-            </svg>
-            <div class="ring-label">
-              <span class="ring-pct">${overall}%</span>
-              <span class="ring-sub">Readiness</span>
-            </div>
-          </div>
-          <div class="dash-counts">
-            <div class="count-box done-box"><div class="count-num">${counts.doneSubs}</div><div class="count-lbl">Completed</div></div>
-            <div class="count-box pend-box"><div class="count-num">${counts.pendingSubs}</div><div class="count-lbl">Pending</div></div>
-            <div class="count-box total-box"><div class="count-num">${counts.totalSubs}</div><div class="count-lbl">Total</div></div>
-          </div>
-        </div>
-
-        <div class="dash-card readiness-card">
-          <div class="dash-card-title">🎯 Section Readiness</div>
-          ${readinessHTML}
-        </div>
-      </div>
-
-      <div class="dash-card topic-bars-card">
+      <div class="dash-card">
         <div class="dash-card-title">📈 Topic-wise Progress</div>
         ${topicRows}
-      </div>
-
-      <div class="dash-card activity-card">
-        <div class="dash-card-title">📅 Daily Activity</div>
-        ${chartHTML}
       </div>
     </div>`;
 }
@@ -609,13 +716,17 @@ function getTopicEmoji(id) {
 // ──────────────────────────────────────────────
 // EVENT HANDLERS
 // ──────────────────────────────────────────────
+// ──────────────────────────────────────────────
+// EVENT HANDLERS
+// ──────────────────────────────────────────────
 document.addEventListener("change", (e) => {
   const input = e.target;
   if (input.type !== "checkbox") return;
   if (!input.dataset.tid) return;
 
   const { tid, sid, section } = input.dataset;
-  const ss = state[tid]?.subtopics?.[sid];
+  const data = getActiveData();
+  const ss = data[tid]?.subtopics?.[sid];
   if (!ss) return;
 
   const dateKey = section + "Date";
@@ -631,8 +742,63 @@ document.addEventListener("change", (e) => {
 });
 
 document.addEventListener("click", (e) => {
+  // --- HUB ACTIONS ---
+  if (e.target.id === "add-profile-btn") {
+    const name = prompt("Enter Version/Profile Name:", `Revision ${Object.keys(appState.profiles).length + 1}`);
+    if (name) {
+      createNewProfile(name);
+      renderApp();
+    }
+  }
+
+  const pBtn = e.target.closest(".p-btn");
+  if (pBtn) {
+    const id = pBtn.dataset.id;
+    if (pBtn.classList.contains("open")) {
+      appState.activeProfileId = id;
+      renderApp();
+    } else if (pBtn.classList.contains("copy")) {
+      duplicateProfile(id);
+      renderApp();
+    } else if (pBtn.classList.contains("delete")) {
+      if (confirm("Delete this version forever?")) {
+        deleteProfile(id);
+        renderApp();
+      }
+    }
+    return;
+  }
+
+  // --- TRACKER ACTIONS ---
+  if (e.target.id === "go-home-btn") {
+    appState.activeProfileId = null;
+    renderApp();
+    return;
+  }
+
   // Topic header toggle
   const header = e.target.closest(".topic-header");
+  const quickBtn = e.target.closest(".quick-done-btn");
+  
+  if (quickBtn) {
+    e.stopPropagation();
+    const tid = quickBtn.dataset.tid;
+    const topic = MASTER_DATA.find(t => t.id === tid);
+    const data = getActiveData();
+    topic.subtopics.forEach(sub => {
+      const ss = data[tid].subtopics[sub.id];
+      ["video","ncert","pyq"].forEach(sec => {
+        if (!ss[sec]) {
+          ss[sec] = true;
+          ss[sec+"Date"] = today();
+        }
+      });
+    });
+    saveState();
+    renderApp();
+    return;
+  }
+
   if (header) {
     const id = header.dataset.id;
     if (expandedTopics.has(id)) {
@@ -666,9 +832,12 @@ document.addEventListener("click", (e) => {
 
   // Reset
   if (e.target.id === "reset-btn") {
-    if (confirm("⚠️ This will erase ALL your progress. Are you sure?")) {
-      initState();
-      expandedTopics.clear();
+    if (confirm("⚠️ Erase all progress in THIS version?")) {
+      const id = appState.activeProfileId;
+      const name = appState.profiles[id].name;
+      deleteProfile(id);
+      createNewProfile(name); // Re-create fresh
+      appState.activeProfileId = Object.keys(appState.profiles).pop();
       renderApp();
     }
     return;

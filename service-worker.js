@@ -3,7 +3,7 @@
 // Offline-first caching strategy
 // ============================================================
 
-const CACHE_NAME   = "bpsc-tracker-v2";
+const CACHE_NAME   = "bpsc-tracker-v3";
 const OFFLINE_PAGE = "./index.html";
 
 // Files to pre-cache on install

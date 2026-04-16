@@ -29,10 +29,10 @@
 
 <!-- Install Banner (hidden by default, shown by JS) -->
 <div id="install-banner" class="hidden">
-  <span>📲 Add to Home Screen for offline use</span>
-  <div style="display:flex;gap:6px">
-    <button id="install-btn">Install</button>
-    <button class="dismiss" id="dismiss-banner">✕</button>
+  <span>🚀 Install for offline use!</span>
+  <div style="display:flex;gap:10px;">
+    <button onclick="installApp()">Install</button>
+    <button class="dismiss" onclick="this.parentElement.parentElement.classList.add('hidden')">×</button>
   </div>
 </div>
 
